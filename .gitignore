@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+credentials.json
+
+# Data & Cache
+data_cache/
+*.parquet
+*.cache
+finviz_cache.json
+ep_report_*.json
+results/
+scratch/
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
