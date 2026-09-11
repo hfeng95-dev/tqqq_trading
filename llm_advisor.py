@@ -8,10 +8,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 try:
-    import google.generativeai as genai
-    genai_available = True
-except ImportError:
-    genai_available = False
+    from google import genai
+    HAS_NEW_GENAI = True
+except Exception:
+    HAS_NEW_GENAI = False
+
+try:
+    import google.generativeai as legacy_genai
+    HAS_LEGACY_GENAI = True
+except Exception:
+    HAS_LEGACY_GENAI = False
 
 SYSTEM_PROMPT = """
 You are an elite quantitative portfolio manager and risk strategist specializing in 3x Leveraged ETFs (TQQQ / SQQQ) and Nasdaq-100 momentum regime switching.
@@ -26,29 +32,124 @@ Always provide razor-sharp, actionable, and mathematically grounded guidance wit
 """
 
 def get_configured_model(model_name: str = "gemini-3.8-flash"):
-    """Configures and returns the Gemini GenerativeModel with fallback hierarchy."""
+    """Legacy helper for backwards compatibility if legacy_genai is available."""
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key or not genai_available:
+    if not api_key or not HAS_LEGACY_GENAI:
         return None
-    
-    genai.configure(api_key=api_key)
-    
+    try:
+        legacy_genai.configure(api_key=api_key)
+        return legacy_genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=SYSTEM_PROMPT
+        )
+    except Exception:
+        return None
+
+def run_advisor_json(prompt: str, system_prompt: str, model_name: str = "gemini-3.8-flash") -> Optional[Dict[str, Any]]:
+    """Executes Gemini JSON query with dual-SDK support (google-genai first, legacy fallback)."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
     models_to_try = [model_name, "gemini-3.8-flash", "gemini-3.7-flash"]
     unique_models = []
     for m in models_to_try:
         if m and m not in unique_models:
             unique_models.append(m)
-            
-    for m in unique_models:
+
+    if HAS_NEW_GENAI:
         try:
-            return genai.GenerativeModel(
-                model_name=m,
-                system_instruction=SYSTEM_PROMPT
-            )
+            client = genai.Client(api_key=api_key)
+            for m in unique_models:
+                try:
+                    response = client.models.generate_content(
+                        model=m,
+                        contents=prompt,
+                        config={
+                            "system_instruction": system_prompt,
+                            "response_mime_type": "application/json",
+                            "temperature": 0.2
+                        }
+                    )
+                    if response and response.text:
+                        text = response.text.strip()
+                        if text.startswith("```json"): text = text[7:]
+                        elif text.startswith("```"): text = text[3:]
+                        if text.endswith("```"): text = text[:-3]
+                        return json.loads(text.strip())
+                except Exception:
+                    continue
         except Exception:
-            continue
-            
+            pass
+
+    if HAS_LEGACY_GENAI:
+        try:
+            legacy_genai.configure(api_key=api_key)
+            for m in unique_models:
+                try:
+                    model = legacy_genai.GenerativeModel(
+                        model_name=m,
+                        system_instruction=system_prompt,
+                        generation_config=legacy_genai.GenerationConfig(
+                            response_mime_type="application/json",
+                            temperature=0.2
+                        )
+                    )
+                    response = model.generate_content(prompt)
+                    if response and response.text:
+                        text = response.text.strip()
+                        if text.startswith("```json"): text = text[7:]
+                        elif text.startswith("```"): text = text[3:]
+                        if text.endswith("```"): text = text[:-3]
+                        return json.loads(text.strip())
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     return None
+
+def run_advisor_text(prompt: str, model_name: str = "gemini-3.8-flash") -> str:
+    """Executes Gemini text query with dual-SDK support."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return "⚠️ Gemini API is not configured. Please check GEMINI_API_KEY in .env."
+    models_to_try = [model_name, "gemini-3.8-flash", "gemini-3.7-flash"]
+    unique_models = []
+    for m in models_to_try:
+        if m and m not in unique_models:
+            unique_models.append(m)
+
+    if HAS_NEW_GENAI:
+        try:
+            client = genai.Client(api_key=api_key)
+            for m in unique_models:
+                try:
+                    response = client.models.generate_content(
+                        model=m,
+                        contents=prompt
+                    )
+                    if response and response.text:
+                        return response.text
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    if HAS_LEGACY_GENAI:
+        try:
+            legacy_genai.configure(api_key=api_key)
+            for m in unique_models:
+                try:
+                    model = legacy_genai.GenerativeModel(model_name=m)
+                    response = model.generate_content(prompt)
+                    if response and response.text:
+                        return response.text
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    return "⚠️ Error querying Gemini API across available models."
 
 def analyze_market_regime(
     current_metrics: Dict[str, Any],
@@ -58,8 +159,8 @@ def analyze_market_regime(
     """
     Evaluates current Nasdaq (QQQ / TQQQ) market regime and outputs structured AI advice.
     """
-    model = get_configured_model(model_name)
-    if model is None:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
         return generate_mock_analysis(current_metrics)
 
     try:
@@ -109,17 +210,11 @@ OUTPUT JSON SCHEMA:
   "institutional_verdict": "Final one-sentence verdict."
 }}
 """
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json", "temperature": 0.2}
-        )
-        
-        text = response.text.strip()
-        if text.startswith("```json"): text = text[7:]
-        elif text.startswith("```"): text = text[3:]
-        if text.endswith("```"): text = text[:-3]
-        
-        return json.loads(text.strip())
+        parsed = run_advisor_json(prompt, SYSTEM_PROMPT, model_name)
+        if parsed and isinstance(parsed, dict):
+            return parsed
+        return generate_mock_analysis(current_metrics)
+
     except Exception as e:
         print(f"Error in Gemini regime analysis: {e}")
         traceback.print_exc()
@@ -131,8 +226,8 @@ def ask_gemini_copilot(
     model_name: str = "gemini-3.8-flash"
 ) -> str:
     """Answers user queries about TQQQ trading strategy, risk management, and macro timing."""
-    model = get_configured_model(model_name)
-    if model is None:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
         return "⚠️ Gemini API is not configured. Please check GEMINI_API_KEY in .env."
 
     prompt = f"""
@@ -149,11 +244,8 @@ USER QUESTION:
 
 Provide a crisp, elite quantitative response with specific actionable numbers, mathematical risk management, and tactical execution instructions.
 """
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Error querying Gemini: {e}"
+    return run_advisor_text(prompt, model_name)
+
 
 def generate_mock_analysis(current_metrics: Dict[str, Any]) -> Dict[str, Any]:
     """Fallback generator when offline."""
