@@ -24,6 +24,9 @@ ep_report_*.json
 results/
 scratch/
 
+# Testing
+.pytest_cache/
+
 # IDE & OS
 .DS_Store
 .vscode/

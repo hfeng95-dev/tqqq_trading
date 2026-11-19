@@ -5,6 +5,8 @@ cd /d "%~dp0"
 set "APP_FILE=app.py"
 set "BASE_PORT=8505"
 set "VENV_DIR=.venv"
+set "REQ_FILE=requirements.txt"
+set "HASH_FILE=%VENV_DIR%\.req_hash"
 
 call :find_python
 if not defined PYTHON_CMD (
@@ -25,24 +27,26 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
 
 set "PY_EXE=%CD%\%VENV_DIR%\Scripts\python.exe"
 
-if exist requirements.txt (
-    echo Installing dependencies from requirements.txt...
-    "%PY_EXE%" -m pip install --upgrade pip
-    if errorlevel 1 (
-        echo Failed to upgrade pip.
-        pause
-        exit /b 1
-    )
-    "%PY_EXE%" -m pip install -r requirements.txt
-    if errorlevel 1 (
-        echo Failed to install requirements.
-        pause
-        exit /b 1
+if exist "%REQ_FILE%" (
+    for /f "usebackq delims=" %%H in (`""%PY_EXE%" -c "import hashlib, pathlib; print(hashlib.sha256(pathlib.Path('requirements.txt').read_bytes()).hexdigest())""`) do set "CURR_HASH=%%H"
+    set "PREV_HASH="
+    if exist "%HASH_FILE%" set /p PREV_HASH=<"%HASH_FILE%"
+    if /i not "!CURR_HASH!"=="!PREV_HASH!" (
+        echo Syncing dependencies from %REQ_FILE%...
+        "%PY_EXE%" -m pip install -r "%REQ_FILE%"
+        if errorlevel 1 (
+            echo Failed to install requirements.
+            pause
+            exit /b 1
+        )
+        >"%HASH_FILE%" echo !CURR_HASH!
     )
 )
 
-call :find_port %BASE_PORT%
+for /f "usebackq delims=" %%P in (`""%PY_EXE%" -c "import socket; fn=lambda p: (lambda s: (s.connect_ex(('127.0.0.1', p)), s.close())[0])(socket.socket()); ports=[p for p in range(%BASE_PORT%, %BASE_PORT%+100) if fn(p)!=0]; print(ports[0] if ports else %BASE_PORT%)""`) do set "PORT=%%P"
+
 echo Launching TQQQ Trading AI Terminal at http://localhost:!PORT!
+start "" "http://localhost:!PORT!"
 "%PY_EXE%" -m streamlit run "%APP_FILE%" --server.port !PORT! --server.headless true
 pause
 exit /b
@@ -64,16 +68,4 @@ if not errorlevel 1 (
         exit /b
     )
 )
-exit /b
-
-:find_port
-set "START_PORT=%~1"
-for /l %%p in (%START_PORT%, 1, 65535) do (
-    netstat -ano | findstr /r /c:":%%p " >nul 2>nul
-    if errorlevel 1 (
-        set "PORT=%%p"
-        exit /b
-    )
-)
-set "PORT=%START_PORT%"
 exit /b
